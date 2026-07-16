@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>照片存储验收</title>
+  <style>
+    body{margin:0;padding:32px;background:#f7f3ed;color:#26231f;font:15px/1.6 system-ui,"PingFang SC",sans-serif}
+    main{max-width:1050px;margin:auto}h1{margin:0 0 22px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+    section{background:#fffaf3;border:1px solid #e2d8ca;border-radius:10px;padding:20px;box-shadow:0 12px 32px #4a39230d}
+    h2{margin:0 0 14px;font-size:18px}pre{white-space:pre-wrap;word-break:break-all;background:#f1eadf;padding:14px;border-radius:8px;min-height:170px}
+    .ok{color:#2f5d50;font-weight:800}.wide{grid-column:1/-1}small{color:#756a5f}
+  </style>
+</head>
+<body><main><h1>照片存储迁移验收</h1><div class="grid">
+  <section><h2>迁移前（本次实测）</h2><pre id="before"></pre></section>
+  <section><h2>迁移后 localStorage（实时）</h2><pre id="after">读取中…</pre><h2>photo-menu-dishes-v1 原始完整 value</h2><pre id="raw-local"></pre></section>
+  <section class="wide"><h2>IndexedDB / photo-menu-db / photos（实时）</h2><pre id="indexeddb">读取中…</pre><small>照片 data 仅显示前缀与字符数，避免诊断页面输出完整的 4.48 MiB 内容。</small></section>
+</div></main><script>
+document.querySelector('#before').textContent=JSON.stringify({dishName:'红烧猪蹄',entryCount:1,photo:{type:'base64 Data URL',prefix:'data:image/jpeg;base64,/9j/4AA…',characters:4698863,approxMiB:4.48}},null,2);
+const dishes=JSON.parse(localStorage.getItem('photo-menu-dishes-v1')||'[]');
+document.querySelector('#raw-local').textContent=localStorage.getItem('photo-menu-dishes-v1')||'';
+const refs=dishes.flatMap(d=>(d.entries||[]).map(e=>({dishName:d.dishName,entryId:e.entryId,photo:e.photo,photoCharacters:(e.photo||'').length,isBase64:(e.photo||'').startsWith('data:image/')})));
+document.querySelector('#after').textContent=JSON.stringify({storageKey:'photo-menu-dishes-v1',serializedCharacters:(localStorage.getItem('photo-menu-dishes-v1')||'').length,entries:refs},null,2);
+const request=indexedDB.open('photo-menu-db',1);
+request.onerror=()=>document.querySelector('#indexeddb').textContent='读取失败：'+request.error;
+request.onsuccess=()=>{const db=request.result;const tx=db.transaction('photos','readonly');const getAll=tx.objectStore('photos').getAll();getAll.onsuccess=()=>{const rows=getAll.result.map(r=>({photoId:r.photoId,dataPrefix:r.data.slice(0,30)+'…',dataCharacters:r.data.length,createdAt:r.createdAt}));document.querySelector('#indexeddb').textContent=JSON.stringify({database:'photo-menu-db',objectStore:'photos',recordCount:rows.length,records:rows},null,2);document.querySelector('#indexeddb').classList.add('ok');db.close()};};
+</script></body></html>
