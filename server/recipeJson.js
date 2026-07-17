@@ -63,6 +63,7 @@ export function normalizeRecipeJson(recipe, fallbackDishName = "", visibleIngred
     步骤: steps.map((step, index) => ({
       序号: Number(step?.["序号"] || index + 1),
       内容: String(step?.["内容"] || "").trim(),
+      timerSeconds: Number.isFinite(step?.timerSeconds) ? Math.max(0, Math.round(step.timerSeconds)) : null,
     })),
   };
 }

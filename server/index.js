@@ -106,6 +106,7 @@ app.post(
     const visibleIngredients = Array.isArray(req.body?.visibleIngredients)
       ? req.body.visibleIngredients.map((item) => String(item || "").trim()).filter(Boolean)
       : [];
+    const note = String(req.body?.note || "").trim();
 
     if (!dishName) {
       return res.status(400).json({ error: "请输入菜名。" });
@@ -115,12 +116,13 @@ app.post(
     const userPrompt = `请为"${dishName}"这道菜生成完整的备菜清单和制作步骤。
 
 已知这道菜图片中实际可见的食材包括：${visibleIngredientsText}
+用户保存这条记录时的备注：${note || "无"}
 
 要求：
 1. 上述"实际可见的食材"必须原样保留在食材清单里，用量可以合理估算，但不能删减或替换
 2. 除了已知食材外，可以补充这道菜通常需要的调料和配料（比如油、盐、酱料），用【补充】标注
 3. 步骤要按实际制作顺序排列，简洁明确，适合边看边做
-4. 如果这道菜有关键的火候、时间提示（比如"中火炒至变色"），要在对应步骤里标注
+4. 如果某一步需要明确计时，请把秒数写入timerSeconds；不需要计时必须写null
 5. 输出严格按照以下JSON格式，不要输出其他内容：
 
 {
@@ -129,7 +131,7 @@ app.post(
     {"名称": "", "用量": "", "来源": "图片可见/补充"}
   ],
   "步骤": [
-    {"序号": 1, "内容": ""}
+    {"序号": 1, "内容": "", "timerSeconds": null}
   ]
 }`;
 

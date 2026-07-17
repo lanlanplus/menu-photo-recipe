@@ -1,4 +1,4 @@
-import { appendEntryToDishes, createActiveOrder, createEntry, createId, inferDishCategory } from "./model.js";
+import { appendEntryToDishes, createActiveOrder, createEntry, createId, inferDishCategory, normalizeReferenceRecipe } from "./model.js";
 import { isEmbeddedPhoto } from "./photoStorage.js";
 
 export const STORAGE_KEYS = {
@@ -59,6 +59,28 @@ export function saveDishes(storage, dishes) {
 export function saveOrders(storage, orders) {
   storage.setItem(STORAGE_KEYS.orders, JSON.stringify(orders));
   return orders;
+}
+
+export function updateOrderCheckedIngredients(storage, orders, orderId, checkedIngredientKeys) {
+  const uniqueKeys = [...new Set(checkedIngredientKeys.filter(Boolean))];
+  return saveOrders(storage, orders.map((order) =>
+    order.orderId === orderId ? { ...order, checkedIngredientKeys: uniqueKeys } : order,
+  ));
+}
+
+export function updateEntryReferenceRecipe(storage, dishes, entryId, referenceRecipe) {
+  const normalizedRecipe = normalizeReferenceRecipe(referenceRecipe);
+  let found = false;
+  const nextDishes = dishes.map((dish) => ({
+    ...dish,
+    entries: (dish.entries || []).map((entry) => {
+      if (entry.entryId !== entryId) return entry;
+      found = true;
+      return { ...entry, referenceRecipe: normalizedRecipe };
+    }),
+  }));
+  if (!found) throw new Error("未找到要更新的菜品记录");
+  return saveDishes(storage, nextDishes);
 }
 
 export function loadAppData(storage = globalThis.localStorage) {

@@ -8,6 +8,8 @@ import {
   migrateLegacyRecipes,
   placeOrder,
   repairDishCategories,
+  updateOrderCheckedIngredients,
+  updateEntryReferenceRecipe,
 } from "./storage.js";
 
 function memoryStorage(seed = {}) {
@@ -110,6 +112,25 @@ test("创建点单时只保留一个 active，并保存采购勾选字段", () =
   loadAppData(storage);
   placeOrder(storage, [], ["dish-a"]);
   assert.equal(loadAppData(storage).orders[0].status, "active");
+});
+
+test("采购勾选写回指定 order，并去重保存", () => {
+  const storage = memoryStorage();
+  const orders = [{ orderId: "order-a", status: "active", checkedIngredientKeys: [] }];
+  const updated = updateOrderCheckedIngredients(storage, orders, "order-a", ["姜", "姜", "盐"]);
+  assert.deepEqual(updated[0].checkedIngredientKeys, ["姜", "盐"]);
+  assert.deepEqual(JSON.parse(storage.getItem(STORAGE_KEYS.orders))[0].checkedIngredientKeys, ["姜", "盐"]);
+});
+
+test("生成的参考菜谱写回原 entry，并补齐计时兼容字段", () => {
+  const storage = memoryStorage();
+  const dishes = [{ dishId: "dish-a", entries: [{ entryId: "entry-a", referenceRecipe: null }] }];
+  const updated = updateEntryReferenceRecipe(storage, dishes, "entry-a", {
+    食材清单: [{ 名称: "鸡蛋", 用量: "2个" }],
+    步骤: [{ 序号: 1, 内容: "炒熟即可" }],
+  });
+  assert.equal(updated[0].entries[0].referenceRecipe.步骤[0].timerSeconds, null);
+  assert.equal(JSON.parse(storage.getItem(STORAGE_KEYS.dishes))[0].entries[0].referenceRecipe.食材清单[0].名称, "鸡蛋");
 });
 
 test("修复历史默认分类，同时保留没有明显关键词的有效分类", () => {

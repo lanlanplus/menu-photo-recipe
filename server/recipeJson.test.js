@@ -16,12 +16,22 @@ test("normalizes recipe fields", () => {
   const result = normalizeRecipeJson({
     菜名: "青椒肉丝",
     食材清单: [{ 名称: "猪里脊", 用量: "200g", 来源: "图片可见" }],
-    步骤: [{ 序号: 1, 内容: "切丝腌制。" }],
+    步骤: [{ 序号: 1, 内容: "切丝腌制。", timerSeconds: 300 }],
   });
 
   assert.equal(result["食材清单"][0]["名称"], "猪里脊");
   assert.equal(result["食材清单"][0]["来源"], "图片可见");
   assert.equal(result["步骤"][0]["序号"], 1);
+  assert.equal(result["步骤"][0].timerSeconds, 300);
+});
+
+test("老菜谱缺少 timerSeconds 时兼容为 null", () => {
+  const result = normalizeRecipeJson({
+    菜名: "凉拌黄瓜",
+    食材清单: [{ 名称: "黄瓜", 用量: "1根" }],
+    步骤: [{ 序号: 1, 内容: "拍碎拌匀。" }],
+  });
+  assert.equal(result["步骤"][0].timerSeconds, null);
 });
 
 test("normalizes recognition candidates and visible ingredients", () => {

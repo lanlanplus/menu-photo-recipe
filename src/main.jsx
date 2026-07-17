@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createId, DISH_CATEGORIES, inferDishCategory } from "./data/model.js";
 import { deletePhoto, getPhoto, savePhoto } from "./data/photoStorage.js";
-import { addDishEntry, dishesToRecipeRecords, loadAppData, migrateDishPhotos, placeOrder } from "./data/storage.js";
+import { buildShoppingList, groupShoppingList } from "./data/shoppingList.js";
+import { addDishEntry, dishesToRecipeRecords, loadAppData, migrateDishPhotos, placeOrder, updateEntryReferenceRecipe, updateOrderCheckedIngredients } from "./data/storage.js";
+import { createRunningTimer, formatTimer, remainingTimerSeconds } from "./data/timer.js";
 import "./styles.css";
 
 function emptyRecipe(dishName = "") {
@@ -62,6 +64,12 @@ function App() {
   const [activeRecipeId, setActiveRecipeId] = useState(null);
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
+  const [activeCookingEntryId, setActiveCookingEntryId] = useState(null);
+  const [recipeGenerationStatus, setRecipeGenerationStatus] = useState({});
+  const [timers, setTimers] = useState({});
+  const recipeGenerationAttemptedRef = useRef(new Set());
+  const recipeGenerationInFlightRef = useRef(new Set());
+  const timerAlertsRef = useRef(new Set());
 
   const isBusy = status === "recognizing" || status === "generating" || status === "saving";
   const savedRecipes = useMemo(() => dishesToRecipeRecords(dishes), [dishes]);
@@ -69,6 +77,20 @@ function App() {
     () => savedRecipes.find((item) => item.id === activeRecipeId) || null,
     [activeRecipeId, savedRecipes],
   );
+  const activeOrder = useMemo(() => orders.find((order) => order.status === "active") || null, [orders]);
+  const shoppingGroups = useMemo(
+    () => groupShoppingList(buildShoppingList(dishes, activeOrder)),
+    [activeOrder, dishes],
+  );
+  const cookingDishes = useMemo(() => {
+    if (!activeOrder) return [];
+    const selected = new Set(activeOrder.dishIds || []);
+    return dishes.filter((dish) => selected.has(dish.dishId)).map((dish) => ({
+      dish,
+      entry: [...(dish.entries || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null,
+    })).filter((item) => item.entry);
+  }, [activeOrder, dishes]);
+  const activeCookingDish = cookingDishes.find((item) => item.entry.entryId === activeCookingEntryId) || cookingDishes[0] || null;
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +129,47 @@ function App() {
       });
     return () => { cancelled = true; };
   }, [savedRecipes]);
+
+  useEffect(() => {
+    if (cookingDishes.length === 0) {
+      setActiveCookingEntryId(null);
+      return;
+    }
+    if (!cookingDishes.some((item) => item.entry.entryId === activeCookingEntryId)) {
+      setActiveCookingEntryId(cookingDishes[0].entry.entryId);
+    }
+  }, [activeCookingEntryId, cookingDishes]);
+
+  useEffect(() => {
+    if (!Object.values(timers).some((timer) => timer.status === "running")) return undefined;
+    const intervalId = window.setInterval(() => {
+      const now = Date.now();
+      setTimers((current) => {
+        let changed = false;
+        const next = { ...current };
+        Object.entries(current).forEach(([key, timer]) => {
+          if (timer.status !== "running") return;
+          const remaining = remainingTimerSeconds(timer.endAt, now);
+          if (remaining === timer.remaining) return;
+          changed = true;
+          next[key] = { ...timer, remaining, status: remaining === 0 ? "done" : "running" };
+          if (remaining === 0 && !timerAlertsRef.current.has(key)) {
+            timerAlertsRef.current.add(key);
+            window.setTimeout(() => window.alert(`${timer.label}计时结束`), 0);
+          }
+        });
+        return changed ? next : current;
+      });
+    }, 250);
+    return () => window.clearInterval(intervalId);
+  }, [timers]);
+
+  useEffect(() => {
+    if (currentPage !== "cooking") return;
+    cookingDishes.forEach((item) => {
+      if (!item.entry.referenceRecipe) generateReferenceRecipe(item);
+    });
+  }, [cookingDishes, currentPage]);
 
   async function handleFileChange(event) {
     const file = event.target.files?.[0];
@@ -264,7 +327,11 @@ function App() {
           .filter((item) => item["名称"].trim() || item["用量"].trim()),
         步骤: recipe["步骤"]
           .filter((step) => step["内容"].trim())
-          .map((step, index) => ({ 序号: index + 1, 内容: step["内容"].trim(), timerSeconds: null })),
+          .map((step, index) => ({
+            序号: index + 1,
+            内容: step["内容"].trim(),
+            timerSeconds: Number.isFinite(step.timerSeconds) ? Math.max(0, Math.round(step.timerSeconds)) : null,
+          })),
       },
     };
 
@@ -317,6 +384,75 @@ function App() {
     } catch (error) {
       console.error("[place-order] failed", error);
     }
+  }
+
+  function setCheckedIngredients(keys) {
+    if (!activeOrder) return;
+    const nextOrders = updateOrderCheckedIngredients(localStorage, orders, activeOrder.orderId, keys);
+    setOrders(nextOrders);
+  }
+
+  function toggleIngredient(key) {
+    const checked = activeOrder?.checkedIngredientKeys || [];
+    setCheckedIngredients(checked.includes(key) ? checked.filter((item) => item !== key) : [...checked, key]);
+  }
+
+  async function generateReferenceRecipe(item, retry = false) {
+    const entryId = item.entry.entryId;
+    if (item.entry.referenceRecipe || recipeGenerationInFlightRef.current.has(entryId)) return;
+    if (!retry && recipeGenerationAttemptedRef.current.has(entryId)) return;
+    recipeGenerationAttemptedRef.current.add(entryId);
+    recipeGenerationInFlightRef.current.add(entryId);
+    setRecipeGenerationStatus((current) => ({ ...current, [entryId]: "loading" }));
+    try {
+      const result = await postJson("/api/generate-recipe", {
+        dishName: item.dish.dishName,
+        visibleIngredients: (item.entry.visibleIngredients || []).map((ingredient) => ingredient["名称"]).filter(Boolean),
+        note: item.entry.note || "",
+      });
+      setDishes((current) => updateEntryReferenceRecipe(localStorage, current, entryId, result.recipe));
+      setRecipeGenerationStatus((current) => ({ ...current, [entryId]: "done" }));
+    } catch (error) {
+      console.error("[cooking-recipe-generation] failed", { entryId, error });
+      setRecipeGenerationStatus((current) => ({ ...current, [entryId]: "error" }));
+    } finally {
+      recipeGenerationInFlightRef.current.delete(entryId);
+    }
+  }
+
+  function timerKey(entryId, stepIndex) {
+    return `${entryId}:${stepIndex}`;
+  }
+
+  function startOrResumeTimer(entryId, stepIndex, totalSeconds, label) {
+    const key = timerKey(entryId, stepIndex);
+    timerAlertsRef.current.delete(key);
+    setTimers((current) => {
+      const existing = current[key];
+      const remaining = existing?.status === "paused" && existing.remaining > 0
+        ? existing.remaining
+        : Math.max(0, Math.round(totalSeconds));
+      return { ...current, [key]: createRunningTimer(totalSeconds, remaining, label) };
+    });
+  }
+
+  function pauseTimer(entryId, stepIndex) {
+    const key = timerKey(entryId, stepIndex);
+    setTimers((current) => {
+      const timer = current[key];
+      if (!timer || timer.status !== "running") return current;
+      const remaining = remainingTimerSeconds(timer.endAt);
+      return { ...current, [key]: { ...timer, remaining, status: "paused", endAt: null } };
+    });
+  }
+
+  function resetTimer(entryId, stepIndex, totalSeconds, label) {
+    const key = timerKey(entryId, stepIndex);
+    timerAlertsRef.current.delete(key);
+    setTimers((current) => ({
+      ...current,
+      [key]: { total: totalSeconds, remaining: totalSeconds, status: "idle", endAt: null, label },
+    }));
   }
 
   if (isInitializing) {
@@ -641,6 +777,145 @@ function App() {
           >
             点单{selectedDishIds.length > 0 ? ` · ${selectedDishIds.length} 道` : ""}
           </button>
+        </main>
+      ) : currentPage === "list" ? (
+        <main className="shopping-page" aria-labelledby="list-title">
+          <header className="page-header shopping-header">
+            <div>
+              <p className="eyebrow">{currentMeta.eyebrow}</p>
+              <h1 id="list-title">{currentMeta.title}</h1>
+              <p className="page-description">{currentMeta.description}</p>
+            </div>
+          </header>
+
+          {!activeOrder ? (
+            <section className="shopping-empty">
+              <span className="placeholder-icon" aria-hidden="true">单</span>
+              <h2>还没有进行中的点单</h2>
+              <p>先去“菜品”选择今天想吃的菜，点单后会自动生成采购清单。</p>
+            </section>
+          ) : shoppingGroups.length === 0 ? (
+            <section className="shopping-empty"><h2>暂时没有可汇总的食材</h2><p>所选菜品的最新记录里还没有食材信息。</p></section>
+          ) : (
+            <div className="shopping-layout">
+              <section className="shopping-summary">
+                <span>本次点单</span>
+                <strong>{activeOrder.dishIds.length} 道菜</strong>
+                <small>{shoppingGroups.reduce((count, group) => count + group.items.length, 0)} 项食材</small>
+              </section>
+              <div className="shopping-groups">
+                {shoppingGroups.map((group) => (
+                  <section className="shopping-group" key={group.category}>
+                    <header><h2>{group.category}</h2><span>{group.items.length}</span></header>
+                    <div className="shopping-items">
+                      {group.items.map((item) => {
+                        const checked = (activeOrder.checkedIngredientKeys || []).includes(item.key);
+                        return (
+                          <label className={`shopping-item ${checked ? "checked" : ""}`} key={item.key}>
+                            <input type="checkbox" checked={checked} onChange={() => toggleIngredient(item.key)} />
+                            <span className="custom-checkbox" aria-hidden="true">{checked ? "✓" : ""}</span>
+                            <strong>{item.name}</strong>
+                            <span className="amount-list">
+                              <small>{item.amounts.length > 0 ? item.amounts.map((amount) => amount || "适量").join("、") : "适量"}</small>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </div>
+          )}
+          {activeOrder && (activeOrder.checkedIngredientKeys || []).length > 0 && (
+            <button type="button" className="reset-checks-action" onClick={() => setCheckedIngredients([])}>
+              <strong>重置勾选</strong>
+              <small>重新核对家里已有的食材</small>
+            </button>
+          )}
+        </main>
+      ) : currentPage === "cooking" ? (
+        <main className="cooking-page" aria-labelledby="cooking-title">
+          <header className="page-header cooking-header">
+            <p className="eyebrow">{currentMeta.eyebrow}</p>
+            <h1 id="cooking-title">{currentMeta.title}</h1>
+            <p className="page-description">{currentMeta.description}</p>
+          </header>
+
+          {cookingDishes.length === 0 ? (
+            <section className="cooking-empty">
+              <span className="placeholder-icon" aria-hidden="true">做</span>
+              <h2>还没有进行中的点单</h2>
+              <p>先从“菜品”页点单，制作步骤会集中显示在这里。</p>
+            </section>
+          ) : (
+            <section className="cooking-workspace">
+              <div className="cooking-tabs" role="tablist" aria-label="点单菜品">
+                {cookingDishes.map((item) => (
+                  <button
+                    key={item.entry.entryId}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeCookingDish?.entry.entryId === item.entry.entryId}
+                    className={activeCookingDish?.entry.entryId === item.entry.entryId ? "active" : ""}
+                    onClick={() => setActiveCookingEntryId(item.entry.entryId)}
+                  >
+                    {item.dish.dishName}
+                    {recipeGenerationStatus[item.entry.entryId] === "loading" && <small>生成中</small>}
+                  </button>
+                ))}
+              </div>
+
+              {activeCookingDish && (
+                <div className="cooking-recipe" role="tabpanel">
+                  <header>
+                    <div><span>正在制作</span><h2>{activeCookingDish.dish.dishName}</h2></div>
+                    <small>{activeCookingDish.entry.referenceRecipe?.步骤?.length || 0} 个步骤</small>
+                  </header>
+                  {!activeCookingDish.entry.referenceRecipe ? (
+                    <div className="recipe-generation-state">
+                      {recipeGenerationStatus[activeCookingDish.entry.entryId] === "error" ? (
+                        <>
+                          <p>参考菜谱生成失败，本次不会自动重复请求。</p>
+                          <button type="button" className="secondary-button" onClick={() => generateReferenceRecipe(activeCookingDish, true)}>手动重试</button>
+                        </>
+                      ) : (
+                        <><div className="spinner dark" /><p>正在根据可见食材和备注生成参考菜谱…</p></>
+                      )}
+                    </div>
+                  ) : (
+                    <ol className="cooking-steps">
+                      {(activeCookingDish.entry.referenceRecipe.步骤 || []).map((step, index) => {
+                        const totalSeconds = Number.isFinite(step.timerSeconds) ? Math.max(0, step.timerSeconds) : 0;
+                        const key = timerKey(activeCookingDish.entry.entryId, index);
+                        const timer = timers[key] || { total: totalSeconds, remaining: totalSeconds, status: "idle" };
+                        const timerLabel = `${activeCookingDish.dish.dishName}第${index + 1}步`;
+                        return (
+                          <li key={key} className="cooking-step">
+                            <span className="step-number">{index + 1}</span>
+                            <div className="step-content">
+                              <p>{step["内容"]}</p>
+                              {totalSeconds > 0 && (
+                                <div className={`step-timer ${timer.status}`}>
+                                  <strong>{formatTimer(timer.remaining)}</strong>
+                                  <div>
+                                    {(timer.status === "idle" || timer.status === "done") && <button type="button" onClick={() => startOrResumeTimer(activeCookingDish.entry.entryId, index, totalSeconds, timerLabel)}>开始计时</button>}
+                                    {timer.status === "running" && <button type="button" onClick={() => pauseTimer(activeCookingDish.entry.entryId, index)}>暂停</button>}
+                                    {timer.status === "paused" && <button type="button" onClick={() => startOrResumeTimer(activeCookingDish.entry.entryId, index, totalSeconds, timerLabel)}>继续</button>}
+                                    <button type="button" className="timer-reset" onClick={() => resetTimer(activeCookingDish.entry.entryId, index, totalSeconds, timerLabel)}>重置</button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
         </main>
       ) : (
         <main className="placeholder-page" aria-labelledby={`${currentPage}-title`}>
