@@ -7,6 +7,7 @@ import {
   loadAppData,
   migrateLegacyRecipes,
   placeOrder,
+  repairDishCategories,
 } from "./storage.js";
 
 function memoryStorage(seed = {}) {
@@ -109,4 +110,15 @@ test("创建点单时只保留一个 active，并保存采购勾选字段", () =
   loadAppData(storage);
   placeOrder(storage, [], ["dish-a"]);
   assert.equal(loadAppData(storage).orders[0].status, "active");
+});
+
+test("修复历史默认分类，同时保留没有明显关键词的有效分类", () => {
+  const repaired = repairDishCategories([
+    { dishName: "金枪鱼牛油果拌饭", category: "炒菜" },
+    { dishName: "韭黄炒鸡蛋", category: "炒菜" },
+    { dishName: "牛肉面", category: "炒菜" },
+    { dishName: "虫草花炖鸡汤", category: "炒菜" },
+    { dishName: "红烧肉", category: "主食" },
+  ]);
+  assert.deepEqual(repaired.map((dish) => dish.category), ["主食", "炒菜", "粉面", "炖盅", "主食"]);
 });

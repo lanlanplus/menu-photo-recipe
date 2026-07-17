@@ -1,4 +1,4 @@
-import { appendEntryToDishes, createActiveOrder, createEntry, createId } from "./model.js";
+import { appendEntryToDishes, createActiveOrder, createEntry, createId, inferDishCategory } from "./model.js";
 import { isEmbeddedPhoto } from "./photoStorage.js";
 
 export const STORAGE_KEYS = {
@@ -86,6 +86,11 @@ export function loadAppData(storage = globalThis.localStorage) {
     saveOrders(storage, orders);
   }
 
+  const repairedDishes = repairDishCategories(dishes);
+  if (repairedDishes.some((dish, index) => dish.category !== dishes[index]?.category)) {
+    dishes = saveDishes(storage, repairedDishes);
+  }
+
   console.info("[local-storage] app data ready", JSON.stringify({
     dishesKeyWritten: storage.getItem(STORAGE_KEYS.dishes) !== null,
     ordersKeyWritten: storage.getItem(STORAGE_KEYS.orders) !== null,
@@ -96,6 +101,13 @@ export function loadAppData(storage = globalThis.localStorage) {
   }));
 
   return { dishes, orders, migrated };
+}
+
+export function repairDishCategories(dishes) {
+  return dishes.map((dish) => ({
+    ...dish,
+    category: inferDishCategory(dish.dishName, dish.category),
+  }));
 }
 
 export function addDishEntry(storage, dishes, input) {

@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createId } from "./data/model.js";
+import { createId, DISH_CATEGORIES, inferDishCategory } from "./data/model.js";
 import { deletePhoto, getPhoto, savePhoto } from "./data/photoStorage.js";
-import { addDishEntry, dishesToRecipeRecords, loadAppData, migrateDishPhotos } from "./data/storage.js";
+import { addDishEntry, dishesToRecipeRecords, loadAppData, migrateDishPhotos, placeOrder } from "./data/storage.js";
 import "./styles.css";
 
 function emptyRecipe(dishName = "") {
@@ -54,6 +54,9 @@ function App() {
   const [newVisibleIngredient, setNewVisibleIngredient] = useState("");
   const [recipe, setRecipe] = useState(null);
   const [dishes, setDishes] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [activeCategory, setActiveCategory] = useState("炒菜");
+  const [selectedDishIds, setSelectedDishIds] = useState([]);
   const [isInitializing, setIsInitializing] = useState(true);
   const [photoUrls, setPhotoUrls] = useState({});
   const [activeRecipeId, setActiveRecipeId] = useState(null);
@@ -75,6 +78,7 @@ function App() {
       const result = await migrateDishPhotos(localStorage, appData.dishes, { savePhoto });
       if (cancelled) return;
       setDishes(result.dishes);
+      setOrders(appData.orders);
       setIsInitializing(false);
       console.info("[photo-migration] complete", JSON.stringify({
         migratedCount: result.migratedCount,
@@ -85,7 +89,9 @@ function App() {
     initialize().catch((error) => {
       console.error("[photo-migration] initialization failed", error);
       if (!cancelled) {
-        setDishes(loadAppData().dishes);
+        const fallbackData = loadAppData();
+        setDishes(fallbackData.dishes);
+        setOrders(fallbackData.orders);
         setIsInitializing(false);
       }
     });
@@ -264,7 +270,7 @@ function App() {
 
     try {
       const nextDishes = addDishEntry(localStorage, dishes, {
-        dishName: dishName.trim(), category: "炒菜", entry,
+        dishName: dishName.trim(), category: inferDishCategory(dishName), entry,
       });
       setDishes(nextDishes);
       setPhotoUrls((current) => ({ ...current, [photoId]: photo }));
@@ -293,6 +299,24 @@ function App() {
     });
     setActiveRecipeId(record.id);
     setMessage("");
+  }
+
+  function toggleDishSelection(dishId) {
+    setSelectedDishIds((current) =>
+      current.includes(dishId) ? current.filter((id) => id !== dishId) : [...current, dishId],
+    );
+  }
+
+  function handlePlaceOrder() {
+    if (selectedDishIds.length === 0) return;
+    try {
+      const nextOrders = placeOrder(localStorage, orders, selectedDishIds);
+      setOrders(nextOrders);
+      setSelectedDishIds([]);
+      setCurrentPage("list");
+    } catch (error) {
+      console.error("[place-order] failed", error);
+    }
   }
 
   if (isInitializing) {
@@ -538,6 +562,86 @@ function App() {
         )}
       </aside>
       </main>
+      ) : currentPage === "dishes" ? (
+        <main className="dishes-page" aria-labelledby="dishes-title">
+          <header className="page-header dishes-header">
+            <div>
+              <p className="eyebrow">{currentMeta.eyebrow}</p>
+              <h1 id="dishes-title">{currentMeta.title}</h1>
+              <p className="page-description">{currentMeta.description}</p>
+            </div>
+            <div className="selection-summary">
+              <strong>{selectedDishIds.length}</strong>
+              <span>道已选</span>
+            </div>
+          </header>
+
+          <section className="dish-browser">
+            <aside className="category-sidebar" aria-label="菜品分类">
+              {DISH_CATEGORIES.map((category) => {
+                const count = dishes.filter((dish) => dish.category === category).length;
+                return (
+                  <button
+                    key={category}
+                    type="button"
+                    className={activeCategory === category ? "active" : ""}
+                    aria-pressed={activeCategory === category}
+                    onClick={() => setActiveCategory(category)}
+                  >
+                    <span>{category}</span><small>{count}</small>
+                  </button>
+                );
+              })}
+            </aside>
+
+            <div className="dish-grid" aria-label={`${activeCategory}菜品`}>
+              {dishes.filter((dish) => dish.category === activeCategory).length === 0 ? (
+                <div className="empty-category">
+                  <span>暂无菜品</span>
+                  <p>去“上传”页面记录一道{activeCategory}吧。</p>
+                </div>
+              ) : (
+                dishes.filter((dish) => dish.category === activeCategory).map((dish) => {
+                  const latestEntry = [...(dish.entries || [])].sort(
+                    (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
+                  )[0];
+                  const selected = selectedDishIds.includes(dish.dishId);
+                  return (
+                    <button
+                      type="button"
+                      className={`dish-card ${selected ? "selected" : ""}`}
+                      key={dish.dishId}
+                      aria-pressed={selected}
+                      onClick={() => toggleDishSelection(dish.dishId)}
+                    >
+                      <span className="dish-card-photo">
+                        {photoUrls[latestEntry?.photo] ? (
+                          <img src={photoUrls[latestEntry.photo]} alt="" />
+                        ) : (
+                          <span className="dish-photo-placeholder">照片加载中</span>
+                        )}
+                        <span className="dish-check" aria-hidden="true">{selected ? "✓" : "+"}</span>
+                      </span>
+                      <span className="dish-card-info">
+                        <strong>{dish.dishName}</strong>
+                        <small>{dish.entries?.length || 0} 次记录</small>
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </section>
+
+          <button
+            type="button"
+            className="order-button"
+            disabled={selectedDishIds.length === 0}
+            onClick={handlePlaceOrder}
+          >
+            点单{selectedDishIds.length > 0 ? ` · ${selectedDishIds.length} 道` : ""}
+          </button>
+        </main>
       ) : (
         <main className="placeholder-page" aria-labelledby={`${currentPage}-title`}>
           <header className="page-header">

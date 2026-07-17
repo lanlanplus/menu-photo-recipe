@@ -1,5 +1,13 @@
 export const DISH_CATEGORIES = ["炒菜", "炖盅", "粉面", "主食"];
 
+export function inferDishCategory(dishName, currentCategory = "") {
+  const name = String(dishName || "").trim();
+  if (/[饭粥饼馒头包子饺子]/.test(name)) return "主食";
+  if (/[粉面]/.test(name)) return "粉面";
+  if (/[炖汤盅羹]/.test(name)) return "炖盅";
+  return DISH_CATEGORIES.includes(currentCategory) ? currentCategory : "炒菜";
+}
+
 export function createId(prefix = "id") {
   const value = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${prefix}-${value}`;
