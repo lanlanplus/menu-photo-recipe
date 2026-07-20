@@ -122,6 +122,13 @@ button:disabled {
 .step-timer > div { display: flex; gap: 7px; }
 .step-timer button { min-height: 34px; border: 0; border-radius: 8px; padding: 0 12px; background: #2f5d50; color: #fff; font-weight: 700; }
 .step-timer button.timer-reset { background: #ded3c4; color: #604f3d; }
+.add-step-timer { margin-top: 14px; border: 1px dashed #cbbba6; border-radius: 9px; padding: 9px 12px; background: transparent; color: #79664f; font-size: 13px; font-weight: 700; }
+.step-timer-setup { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: #f1eadf; }
+.step-timer-setup label { display: flex; align-items: center; gap: 8px; color: #66594b; font-size: 13px; font-weight: 700; }
+.step-timer-setup input { width: 88px; min-height: 36px; }
+.step-timer-setup > div { display: flex; gap: 7px; }
+.step-timer-setup button { min-height: 34px; border: 0; border-radius: 8px; padding: 0 12px; background: #2f5d50; color: #fff; font-weight: 700; }
+.step-timer-setup button.timer-setup-cancel { background: #ded3c4; color: #604f3d; }
 .recipe-generation-state, .cooking-empty { display: grid; place-items: center; align-content: center; min-height: 330px; padding: 30px; text-align: center; }
 .recipe-generation-state p, .cooking-empty p { margin: 12px 0 0; color: #8d8172; }
 .recipe-generation-state .secondary-button { margin-top: 16px; }
@@ -775,6 +782,7 @@ select:focus {
   .cooking-page { padding: 20px 14px 112px; }
   .cooking-step { grid-template-columns: 34px minmax(0,1fr); padding: 17px 14px; }
   .step-timer { align-items: stretch; flex-direction: column; }
+  .step-timer-setup { align-items: stretch; flex-direction: column; }
   .dishes-header { align-items: start; }
   .dish-browser { grid-template-columns: 1fr; }
   .category-sidebar { grid-template-columns: repeat(4, 1fr); overflow-x: auto; }

@@ -83,6 +83,32 @@ export function updateEntryReferenceRecipe(storage, dishes, entryId, referenceRe
   return saveDishes(storage, nextDishes);
 }
 
+export function updateEntryStepTimer(storage, dishes, entryId, stepIndex, timerSeconds) {
+  const seconds = Number(timerSeconds);
+  if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("计时时长必须大于0秒");
+  let found = false;
+  const nextDishes = dishes.map((dish) => ({
+    ...dish,
+    entries: (dish.entries || []).map((entry) => {
+      if (entry.entryId !== entryId) return entry;
+      const steps = entry.referenceRecipe?.步骤;
+      if (!Array.isArray(steps) || !steps[stepIndex]) throw new Error("未找到要更新的制作步骤");
+      found = true;
+      return {
+        ...entry,
+        referenceRecipe: {
+          ...entry.referenceRecipe,
+          步骤: steps.map((step, index) => index === stepIndex
+            ? { ...step, timerSeconds: Math.round(seconds) }
+            : step),
+        },
+      };
+    }),
+  }));
+  if (!found) throw new Error("未找到要更新的菜品记录");
+  return saveDishes(storage, nextDishes);
+}
+
 export function loadAppData(storage = globalThis.localStorage) {
   let dishes = readArray(storage, STORAGE_KEYS.dishes);
   let orders = readArray(storage, STORAGE_KEYS.orders);

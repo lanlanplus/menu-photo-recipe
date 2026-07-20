@@ -10,6 +10,7 @@ import {
   repairDishCategories,
   updateOrderCheckedIngredients,
   updateEntryReferenceRecipe,
+  updateEntryStepTimer,
 } from "./storage.js";
 
 function memoryStorage(seed = {}) {
@@ -131,6 +132,21 @@ test("生成的参考菜谱写回原 entry，并补齐计时兼容字段", () =>
   });
   assert.equal(updated[0].entries[0].referenceRecipe.步骤[0].timerSeconds, null);
   assert.equal(JSON.parse(storage.getItem(STORAGE_KEYS.dishes))[0].entries[0].referenceRecipe.食材清单[0].名称, "鸡蛋");
+});
+
+test("手动计时时长只写回指定 entry 的指定步骤并持久化", () => {
+  const storage = memoryStorage();
+  const dishes = [{
+    dishId: "dish-a",
+    entries: [{
+      entryId: "entry-a",
+      referenceRecipe: { 步骤: [{ 内容: "焖煮", timerSeconds: null }, { 内容: "装盘", timerSeconds: null }] },
+    }],
+  }];
+  const updated = updateEntryStepTimer(storage, dishes, "entry-a", 0, 90);
+  assert.equal(updated[0].entries[0].referenceRecipe.步骤[0].timerSeconds, 90);
+  assert.equal(updated[0].entries[0].referenceRecipe.步骤[1].timerSeconds, null);
+  assert.equal(JSON.parse(storage.getItem(STORAGE_KEYS.dishes))[0].entries[0].referenceRecipe.步骤[0].timerSeconds, 90);
 });
 
 test("修复历史默认分类，同时保留没有明显关键词的有效分类", () => {

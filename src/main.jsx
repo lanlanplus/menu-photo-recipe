@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createId, DISH_CATEGORIES, inferDishCategory } from "./data/model.js";
 import { deletePhoto, getPhoto, savePhoto } from "./data/photoStorage.js";
 import { buildShoppingList, groupShoppingList } from "./data/shoppingList.js";
-import { addDishEntry, dishesToRecipeRecords, loadAppData, migrateDishPhotos, placeOrder, updateEntryReferenceRecipe, updateOrderCheckedIngredients } from "./data/storage.js";
+import { addDishEntry, dishesToRecipeRecords, loadAppData, migrateDishPhotos, placeOrder, updateEntryReferenceRecipe, updateEntryStepTimer, updateOrderCheckedIngredients } from "./data/storage.js";
 import { createRunningTimer, formatTimer, remainingTimerSeconds } from "./data/timer.js";
 import "./styles.css";
 
@@ -67,6 +67,7 @@ function App() {
   const [activeCookingEntryId, setActiveCookingEntryId] = useState(null);
   const [recipeGenerationStatus, setRecipeGenerationStatus] = useState({});
   const [timers, setTimers] = useState({});
+  const [timerEditors, setTimerEditors] = useState({});
   const recipeGenerationAttemptedRef = useRef(new Set());
   const recipeGenerationInFlightRef = useRef(new Set());
   const timerAlertsRef = useRef(new Set());
@@ -150,7 +151,7 @@ function App() {
         Object.entries(current).forEach(([key, timer]) => {
           if (timer.status !== "running") return;
           const remaining = remainingTimerSeconds(timer.endAt, now);
-          if (remaining === timer.remaining) return;
+          if (remaining === timer.remaining && remaining !== 0) return;
           changed = true;
           next[key] = { ...timer, remaining, status: remaining === 0 ? "done" : "running" };
           if (remaining === 0 && !timerAlertsRef.current.has(key)) {
@@ -453,6 +454,18 @@ function App() {
       ...current,
       [key]: { total: totalSeconds, remaining: totalSeconds, status: "idle", endAt: null, label },
     }));
+  }
+
+  function saveManualTimer(entryId, stepIndex) {
+    const key = timerKey(entryId, stepIndex);
+    const minutes = Number(timerEditors[key]);
+    if (!Number.isFinite(minutes) || minutes <= 0) return;
+    setDishes((current) => updateEntryStepTimer(localStorage, current, entryId, stepIndex, minutes * 60));
+    setTimerEditors((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
   }
 
   if (isInitializing) {
@@ -886,16 +899,19 @@ function App() {
                   ) : (
                     <ol className="cooking-steps">
                       {(activeCookingDish.entry.referenceRecipe.步骤 || []).map((step, index) => {
-                        const totalSeconds = Number.isFinite(step.timerSeconds) ? Math.max(0, step.timerSeconds) : 0;
+                        const hasTimer = Number.isFinite(step.timerSeconds);
+                        const totalSeconds = hasTimer ? Math.max(0, step.timerSeconds) : 0;
                         const key = timerKey(activeCookingDish.entry.entryId, index);
                         const timer = timers[key] || { total: totalSeconds, remaining: totalSeconds, status: "idle" };
                         const timerLabel = `${activeCookingDish.dish.dishName}第${index + 1}步`;
+                        const editingTimer = timerEditors[key] !== undefined;
+                        const timerMinutes = Number(timerEditors[key]);
                         return (
                           <li key={key} className="cooking-step">
                             <span className="step-number">{index + 1}</span>
                             <div className="step-content">
                               <p>{step["内容"]}</p>
-                              {totalSeconds > 0 && (
+                              {hasTimer ? (
                                 <div className={`step-timer ${timer.status}`}>
                                   <strong>{formatTimer(timer.remaining)}</strong>
                                   <div>
@@ -905,6 +921,34 @@ function App() {
                                     <button type="button" className="timer-reset" onClick={() => resetTimer(activeCookingDish.entry.entryId, index, totalSeconds, timerLabel)}>重置</button>
                                   </div>
                                 </div>
+                              ) : editingTimer ? (
+                                <div className="step-timer-setup">
+                                  <label>
+                                    <span>计时时长</span>
+                                    <input
+                                      type="number"
+                                      min="0.1"
+                                      step="0.5"
+                                      inputMode="decimal"
+                                      value={timerEditors[key]}
+                                      aria-label={`${timerLabel}计时分钟数`}
+                                      onChange={(event) => setTimerEditors((current) => ({ ...current, [key]: event.target.value }))}
+                                    />
+                                    <span>分钟</span>
+                                  </label>
+                                  <div>
+                                    <button type="button" disabled={!Number.isFinite(timerMinutes) || timerMinutes <= 0} onClick={() => saveManualTimer(activeCookingDish.entry.entryId, index)}>保存计时</button>
+                                    <button type="button" className="timer-setup-cancel" onClick={() => setTimerEditors((current) => {
+                                      const next = { ...current };
+                                      delete next[key];
+                                      return next;
+                                    })}>取消</button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <button type="button" className="add-step-timer" onClick={() => setTimerEditors((current) => ({ ...current, [key]: "" }))}>
+                                  这一步没有设置计时，点击添加
+                                </button>
                               )}
                             </div>
                           </li>
