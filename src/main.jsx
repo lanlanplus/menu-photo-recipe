@@ -76,6 +76,8 @@ function App() {
   const [timerEditors, setTimerEditors] = useState({});
   const [session, setSession] = useState(null);
   const [accountEmail, setAccountEmail] = useState("");
+  const [accountPassword, setAccountPassword] = useState("");
+  const [accountPasswordConfirm, setAccountPasswordConfirm] = useState("");
   const [accountMessage, setAccountMessage] = useState("");
   const [syncStatus, setSyncStatus] = useState("idle");
   const [syncPreview, setSyncPreview] = useState(null);
@@ -504,16 +506,47 @@ function App() {
     setBackups(await listLocalBackups());
   }
 
-  async function handleSendMagicLink() {
-    if (!supabase || !accountEmail.trim()) return;
+  async function handlePasswordLogin() {
+    if (!supabase || !accountEmail.trim() || !accountPassword) return;
     setSyncStatus("auth");
     setAccountMessage("");
-    const { error } = await supabase.auth.signInWithOtp({
+    const { error } = await supabase.auth.signInWithPassword({
       email: accountEmail.trim(),
+      password: accountPassword,
+    });
+    setSyncStatus("idle");
+    if (error) {
+      setAccountMessage(`登录失败：${error.message}`);
+    } else {
+      setAccountPassword("");
+      setAccountPasswordConfirm("");
+      setAccountMessage("登录成功。不会自动同步，请先检查差异。");
+    }
+  }
+
+  async function handlePasswordRegister() {
+    if (!supabase || !accountEmail.trim() || accountPassword.length < 6) return;
+    if (accountPassword !== accountPasswordConfirm) {
+      setAccountMessage("两次输入的密码不一致。");
+      return;
+    }
+    setSyncStatus("auth");
+    setAccountMessage("");
+    const { data, error } = await supabase.auth.signUp({
+      email: accountEmail.trim(),
+      password: accountPassword,
       options: { emailRedirectTo: window.location.origin },
     });
     setSyncStatus("idle");
-    setAccountMessage(error ? error.message : "登录链接已发送，请在邮箱中打开。登录成功后不会自动同步。 ");
+    if (error) {
+      setAccountMessage(`注册失败：${error.message}`);
+    } else if (data.session) {
+      setAccountPassword("");
+      setAccountPasswordConfirm("");
+      setAccountMessage("注册并登录成功。不会自动同步，请先检查差异。");
+    } else {
+      setAccountMessage("注册申请已提交。当前Supabase设置要求验证邮箱，请完成验证后再用账号密码登录。");
+    }
   }
 
   async function handleSignOut() {
@@ -1186,9 +1219,14 @@ function App() {
                 </div>
               ) : (
                 <div className="login-form">
-                  <label><span>邮箱</span><input type="email" value={accountEmail} placeholder="name@example.com" onChange={(event) => setAccountEmail(event.target.value)} /></label>
-                  <button type="button" className="primary-button" disabled={!accountEmail.trim() || syncStatus !== "idle"} onClick={handleSendMagicLink}>发送登录链接</button>
-                  <small>通过邮箱一次性链接登录，不需要在本应用保存密码。</small>
+                  <label><span>邮箱账号</span><input type="email" autoComplete="email" value={accountEmail} placeholder="name@example.com" onChange={(event) => setAccountEmail(event.target.value)} /></label>
+                  <label><span>密码</span><input type="password" autoComplete="current-password" value={accountPassword} placeholder="至少6位" onChange={(event) => setAccountPassword(event.target.value)} /></label>
+                  <label><span>确认密码（注册时填写）</span><input type="password" autoComplete="new-password" value={accountPasswordConfirm} placeholder="再次输入密码" onChange={(event) => setAccountPasswordConfirm(event.target.value)} /></label>
+                  <div className="password-auth-actions">
+                    <button type="button" className="primary-button" disabled={!accountEmail.trim() || !accountPassword || syncStatus !== "idle"} onClick={handlePasswordLogin}>登录</button>
+                    <button type="button" className="secondary-button" disabled={!accountEmail.trim() || accountPassword.length < 6 || accountPassword !== accountPasswordConfirm || syncStatus !== "idle"} onClick={handlePasswordRegister}>注册新账号</button>
+                  </div>
+                  <small>密码直接提交给Supabase Auth，本应用不会把密码写入菜品数据或备份。</small>
                 </div>
               )}
             </section>

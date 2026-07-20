@@ -16,10 +16,18 @@ Open the target Supabase project's SQL Editor and run:
 The publishable browser key cannot create tables. Do not place a service-role
 key in this application or in any `VITE_` environment variable.
 
-## 2. Configure email login redirects
+## 2. Configure email/password authentication
 
-In Authentication > URL Configuration, add the URLs used by the application,
-including the local development URL when testing:
+Enable the Email provider in Authentication > Providers. The app uses email
+and password for registration and login.
+
+If Confirm email is enabled, registration still sends one confirmation email.
+To allow immediate registration without any email, disable Confirm email for
+the Email provider. Choose this deliberately based on the account-security
+requirements of the deployment.
+
+When confirmation emails are enabled, add the URLs used by the application in
+Authentication > URL Configuration:
 
 - `http://127.0.0.1:5174`
 - The final deployed application origin
