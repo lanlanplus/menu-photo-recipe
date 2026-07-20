@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createId, DISH_CATEGORIES, inferDishCategory } from "./data/model.js";
-import { deletePhoto, getPhoto, savePhoto } from "./data/photoStorage.js";
+import { deletePhoto, getPhoto, listPhotos, savePhoto } from "./data/photoStorage.js";
 import { buildShoppingList, groupShoppingList } from "./data/shoppingList.js";
-import { addDishEntry, dishesToRecipeRecords, loadAppData, migrateDishPhotos, placeOrder, updateEntryReferenceRecipe, updateEntryStepTimer, updateOrderCheckedIngredients } from "./data/storage.js";
+import { addDishEntry, dishesToRecipeRecords, loadAppData, migrateDishPhotos, placeOrder, saveDishes, saveOrders, updateEntryReferenceRecipe, updateEntryStepTimer, updateOrderCheckedIngredients } from "./data/storage.js";
 import { createRunningTimer, formatTimer, remainingTimerSeconds } from "./data/timer.js";
+import { createLocalBackup, getLocalBackup, importLocalBackup, listLocalBackups, restoreLocalBackup } from "./data/backupStorage.js";
+import { createSyncPreview, downloadCloudPhoto, readCloudState, uploadCloudPhoto, writeCloudState } from "./data/sync.js";
+import { isSupabaseConfigured, supabase } from "./data/supabaseClient.js";
 import "./styles.css";
 
 function emptyRecipe(dishName = "") {
@@ -48,6 +51,7 @@ function normalizeIngredientForEdit(item) {
 
 function App() {
   const fileInputRef = useRef(null);
+  const backupFileInputRef = useRef(null);
   const [currentPage, setCurrentPage] = useState("dishes");
   const [photo, setPhoto] = useState("");
   const [dishName, setDishName] = useState("");
@@ -55,6 +59,8 @@ function App() {
   const [visibleIngredients, setVisibleIngredients] = useState([]);
   const [newVisibleIngredient, setNewVisibleIngredient] = useState("");
   const [recipe, setRecipe] = useState(null);
+  const [note, setNote] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("炒菜");
   const [dishes, setDishes] = useState([]);
   const [orders, setOrders] = useState([]);
   const [activeCategory, setActiveCategory] = useState("炒菜");
@@ -68,6 +74,12 @@ function App() {
   const [recipeGenerationStatus, setRecipeGenerationStatus] = useState({});
   const [timers, setTimers] = useState({});
   const [timerEditors, setTimerEditors] = useState({});
+  const [session, setSession] = useState(null);
+  const [accountEmail, setAccountEmail] = useState("");
+  const [accountMessage, setAccountMessage] = useState("");
+  const [syncStatus, setSyncStatus] = useState("idle");
+  const [syncPreview, setSyncPreview] = useState(null);
+  const [backups, setBackups] = useState([]);
   const recipeGenerationAttemptedRef = useRef(new Set());
   const recipeGenerationInFlightRef = useRef(new Set());
   const timerAlertsRef = useRef(new Set());
@@ -120,6 +132,18 @@ function App() {
     });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (!supabase) return undefined;
+    supabase.auth.getSession().then(({ data }) => setSession(data.session || null));
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (currentPage !== "account") return;
+    listLocalBackups().then(setBackups).catch((error) => setAccountMessage(error.message));
+  }, [currentPage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -182,6 +206,8 @@ function App() {
     setDishCandidates([]);
     setVisibleIngredients([]);
     setNewVisibleIngredient("");
+    setNote("");
+    setSelectedCategory("炒菜");
     setActiveRecipeId(null);
 
     try {
@@ -197,7 +223,9 @@ function App() {
         : [];
 
       setDishCandidates(nextCandidates);
-      setDishName(nextCandidates[0] && nextCandidates[0] !== "未识别" ? nextCandidates[0] : "");
+      const recognizedDishName = nextCandidates[0] && nextCandidates[0] !== "未识别" ? nextCandidates[0] : "";
+      setDishName(recognizedDishName);
+      setSelectedCategory(inferDishCategory(recognizedDishName));
       setVisibleIngredients(nextVisibleIngredients);
       setStatus("idle");
 
@@ -225,6 +253,7 @@ function App() {
       const result = await postJson("/api/generate-recipe", {
         dishName: nextDishName,
         visibleIngredients: visibleIngredients.map((item) => item.trim()).filter(Boolean),
+        note,
       });
       setRecipe({
         ...result.recipe,
@@ -241,6 +270,7 @@ function App() {
 
   function selectCandidate(candidate) {
     setDishName(candidate);
+    setSelectedCategory(inferDishCategory(candidate));
     setRecipe(null);
     setMessage("");
   }
@@ -300,8 +330,8 @@ function App() {
       setMessage("请先上传一张菜品照片。");
       return;
     }
-    if (!dishName.trim() || !recipe) {
-      setMessage("请先生成或填写菜谱内容。");
+    if (!dishName.trim()) {
+      setMessage("请先确认菜名。");
       return;
     }
 
@@ -320,8 +350,8 @@ function App() {
       createdAt: new Date().toISOString(),
       photo: photoId,
       visibleIngredients: visibleIngredients.map((item) => ({ 名称: item.trim(), 用量: "", 来源: "图片可见" })),
-      note: "",
-      referenceRecipe: {
+      note: note.trim(),
+      referenceRecipe: recipe ? {
         ...recipe,
         食材清单: recipe["食材清单"]
           .map(normalizeIngredientForEdit)
@@ -333,12 +363,12 @@ function App() {
             内容: step["内容"].trim(),
             timerSeconds: Number.isFinite(step.timerSeconds) ? Math.max(0, Math.round(step.timerSeconds)) : null,
           })),
-      },
+      } : null,
     };
 
     try {
       const nextDishes = addDishEntry(localStorage, dishes, {
-        dishName: dishName.trim(), category: inferDishCategory(dishName), entry,
+        dishName: dishName.trim(), category: selectedCategory, entry,
       });
       setDishes(nextDishes);
       setPhotoUrls((current) => ({ ...current, [photoId]: photo }));
@@ -358,13 +388,15 @@ function App() {
     const resolvedPhoto = photoUrls[record.photo] || await getPhoto(record.photo).catch(() => null);
     setPhoto(resolvedPhoto || "");
     setDishName(record.dishName);
+    setSelectedCategory(record.category || inferDishCategory(record.dishName));
+    setNote(record.note || "");
     setDishCandidates([]);
-    setVisibleIngredients([]);
+    setVisibleIngredients((record.visibleIngredients || []).map((item) => item["名称"]).filter(Boolean));
     setNewVisibleIngredient("");
-    setRecipe({
+    setRecipe(record.recipe ? {
       ...record.recipe,
-      食材清单: (record.recipe?.["食材清单"] || []).map(normalizeIngredientForEdit),
-    });
+      食材清单: (record.recipe["食材清单"] || []).map(normalizeIngredientForEdit),
+    } : null);
     setActiveRecipeId(record.id);
     setMessage("");
   }
@@ -468,6 +500,162 @@ function App() {
     });
   }
 
+  async function refreshBackupList() {
+    setBackups(await listLocalBackups());
+  }
+
+  async function handleSendMagicLink() {
+    if (!supabase || !accountEmail.trim()) return;
+    setSyncStatus("auth");
+    setAccountMessage("");
+    const { error } = await supabase.auth.signInWithOtp({
+      email: accountEmail.trim(),
+      options: { emailRedirectTo: window.location.origin },
+    });
+    setSyncStatus("idle");
+    setAccountMessage(error ? error.message : "登录链接已发送，请在邮箱中打开。登录成功后不会自动同步。 ");
+  }
+
+  async function handleSignOut() {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setSyncPreview(null);
+    setAccountMessage("已退出登录，本地数据保持不变。");
+  }
+
+  async function buildLocalSyncState() {
+    const photos = await listPhotos();
+    return {
+      state: { version: 1, dishes, orders, photoIds: photos.map((photo) => photo.photoId) },
+      photos,
+    };
+  }
+
+  async function handleCheckSync() {
+    if (!supabase || !session?.user) return;
+    try {
+      setSyncStatus("checking");
+      setAccountMessage("");
+      const [local, remote] = await Promise.all([
+        buildLocalSyncState(),
+        readCloudState(supabase, session.user.id),
+      ]);
+      const preview = createSyncPreview(local.state, remote.state);
+      setSyncPreview({
+        ...preview,
+        expectedRevision: remote.revision,
+        localFingerprint: JSON.stringify(local.state),
+      });
+      setAccountMessage("差异检查完成。此操作尚未修改本地或云端数据。");
+    } catch (error) {
+      setAccountMessage(`检查同步失败：${error.message}`);
+    } finally {
+      setSyncStatus("idle");
+    }
+  }
+
+  async function handleConfirmSync() {
+    if (!supabase || !session?.user || !syncPreview) return;
+    try {
+      setSyncStatus("syncing");
+      setAccountMessage("正在创建同步前完整备份…");
+      const local = await buildLocalSyncState();
+      if (JSON.stringify(local.state) !== syncPreview.localFingerprint) {
+        throw new Error("本地数据在预览后发生变化，请重新检查同步");
+      }
+      const remote = await readCloudState(supabase, session.user.id);
+      if (remote.revision !== syncPreview.expectedRevision) {
+        throw new Error("云端数据在预览后发生变化，请重新检查同步");
+      }
+      await createLocalBackup({ dishes, orders, reason: "before-sync" });
+      await refreshBackupList();
+
+      const localPhotos = new Map(local.photos.map((photo) => [photo.photoId, photo.data]));
+      for (const photoId of syncPreview.uploadPhotoIds) {
+        const data = localPhotos.get(photoId);
+        if (!data) throw new Error(`本地照片 ${photoId} 缺失，已停止同步`);
+        await uploadCloudPhoto(supabase, session.user.id, photoId, data);
+      }
+      for (const photoId of syncPreview.downloadPhotoIds) {
+        const data = await downloadCloudPhoto(supabase, session.user.id, photoId);
+        await savePhoto(photoId, data);
+      }
+
+      await writeCloudState(supabase, session.user.id, syncPreview.merged, remote.revision);
+      const nextDishes = syncPreview.merged.dishes || [];
+      const nextOrders = syncPreview.merged.orders || [];
+      saveDishes(localStorage, nextDishes);
+      saveOrders(localStorage, nextOrders);
+      setDishes(nextDishes);
+      setOrders(nextOrders);
+      setSyncPreview(null);
+      setAccountMessage("同步完成。本地与云端已更新为非破坏合并结果。");
+    } catch (error) {
+      setAccountMessage(`同步已停止：${error.message}`);
+    } finally {
+      setSyncStatus("idle");
+    }
+  }
+
+  async function handleRestoreBackup(backupId) {
+    if (!window.confirm("恢复会替换当前本地数据；系统会先保存一份恢复前备份。确定继续吗？")) return;
+    try {
+      setSyncStatus("restoring");
+      const snapshot = await getLocalBackup(backupId);
+      if (!snapshot) throw new Error("备份不存在");
+      await createLocalBackup({ dishes, orders, reason: "before-restore" });
+      const restored = await restoreLocalBackup(snapshot);
+      setDishes(restored.dishes);
+      setOrders(restored.orders);
+      setSyncPreview(null);
+      await refreshBackupList();
+      setAccountMessage("本地备份已恢复。云端未被修改，请检查后再决定是否同步。");
+    } catch (error) {
+      setAccountMessage(`恢复失败：${error.message}`);
+    } finally {
+      setSyncStatus("idle");
+    }
+  }
+
+  async function handleCreateBackup() {
+    try {
+      setSyncStatus("backing-up");
+      await createLocalBackup({ dishes, orders, reason: "manual" });
+      await refreshBackupList();
+      setAccountMessage("完整本地备份已创建。");
+    } catch (error) {
+      setAccountMessage(`备份失败：${error.message}`);
+    } finally {
+      setSyncStatus("idle");
+    }
+  }
+
+  async function handleExportBackup(backupId) {
+    const snapshot = await getLocalBackup(backupId);
+    if (!snapshot) return;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot)], { type: "application/json" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `photo-menu-backup-${snapshot.createdAt.replace(/[:.]/g, "-")}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleImportBackup(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const snapshot = JSON.parse(await file.text());
+      await importLocalBackup(snapshot);
+      await refreshBackupList();
+      setAccountMessage("备份文件已导入到备份列表，尚未恢复或修改当前数据。");
+    } catch (error) {
+      setAccountMessage(`导入失败：${error.message}`);
+    } finally {
+      event.target.value = "";
+    }
+  }
+
   if (isInitializing) {
     return <main className="initializing-screen"><div className="spinner dark" /><p>正在整理本地照片…</p></main>;
   }
@@ -477,6 +665,7 @@ function App() {
     list: { eyebrow: "带着清单去采买", title: "清单", description: "点单后，这里会自动汇总需要购买的食材。", icon: "单" },
     cooking: { eyebrow: "跟着步骤开始做", title: "制作", description: "点单中的菜谱步骤和计时器会集中显示在这里。", icon: "做" },
     upload: { eyebrow: "记录一道新菜", title: "上传", description: "拍照识菜，确认食材并保存你的做法。", icon: "传" },
+    account: { eyebrow: "数据由你掌控", title: "同步与备份", description: "登录不会自动同步，先检查差异，再由你确认写入。", icon: "云" },
   };
 
   const navigation = [
@@ -484,6 +673,7 @@ function App() {
     { id: "list", label: "清单", icon: "单" },
     { id: "cooking", label: "制作", icon: "做" },
     { id: "upload", label: "上传", icon: "传" },
+    { id: "account", label: "同步", icon: "云" },
   ];
 
   const currentMeta = pageMeta[currentPage];
@@ -559,6 +749,19 @@ function App() {
               />
             </div>
 
+            <div className="upload-meta-grid">
+              <label>
+                <span className="field-label compact-label">分类</span>
+                <select value={selectedCategory} onChange={(event) => setSelectedCategory(event.target.value)}>
+                  {DISH_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
+                </select>
+              </label>
+              <label>
+                <span className="field-label compact-label">备注</span>
+                <textarea value={note} rows={3} placeholder="例如：少辣、下次多放葱" onChange={(event) => setNote(event.target.value)} />
+              </label>
+            </div>
+
             <div className="confirm-block">
               <div className="panel-title-row">
                 <label className="field-label compact-label">确认可见食材</label>
@@ -603,15 +806,16 @@ function App() {
             >
               生成菜谱
             </button>
+            <p className="optional-recipe-hint">参考菜谱为可选项，不生成也可以直接保存这条记录。</p>
 
             {message && <p className="notice">{message}</p>}
           </section>
 
           <section className="panel recipe-panel">
             <div className="panel-title-row">
-              <h2>备菜清单与制作步骤</h2>
-              <button className="primary-button compact" disabled={isBusy || !recipe} onClick={saveCurrentRecipe}>
-                保存
+              <h2>参考菜谱（可选）</h2>
+              <button className="primary-button compact" disabled={isBusy || !photo || !dishName.trim()} onClick={saveCurrentRecipe}>
+                保存记录
               </button>
             </div>
 
@@ -666,7 +870,7 @@ function App() {
                 </button>
               </div>
             ) : (
-              <div className="empty-recipe">上传照片并确认菜名、食材后，点击生成菜谱。</div>
+              <div className="empty-recipe">需要参考做法时可以生成菜谱；也可以保留照片、可见食材和备注后直接保存。</div>
             )}
           </section>
         </div>
@@ -704,9 +908,9 @@ function App() {
         {activeRecipe && (
           <section className="library-detail">
             <h3>{activeRecipe.dishName}</h3>
-            <p>
-              {activeRecipe.recipe["食材清单"].length} 项食材，{activeRecipe.recipe["步骤"].length} 个步骤
-            </p>
+            <p>{activeRecipe.recipe
+              ? `${activeRecipe.recipe["食材清单"].length} 项食材，${activeRecipe.recipe["步骤"].length} 个步骤`
+              : "尚未生成参考菜谱"}</p>
           </section>
         )}
       </aside>
@@ -960,6 +1164,82 @@ function App() {
               )}
             </section>
           )}
+        </main>
+      ) : currentPage === "account" ? (
+        <main className="account-page" aria-labelledby="account-title">
+          <header className="page-header account-header">
+            <p className="eyebrow">{currentMeta.eyebrow}</p>
+            <h1 id="account-title">{currentMeta.title}</h1>
+            <p className="page-description">{currentMeta.description}</p>
+          </header>
+
+          <div className="account-grid">
+            <section className="account-card">
+              <div className="account-card-title"><h2>账户</h2><span>{session ? "已登录" : "未登录"}</span></div>
+              {!isSupabaseConfigured ? (
+                <p className="account-muted">尚未配置 Supabase 环境变量。</p>
+              ) : session ? (
+                <div className="signed-in-block">
+                  <strong>{session.user.email}</strong>
+                  <p>登录不会自动上传、下载或合并数据。</p>
+                  <button type="button" className="text-button" onClick={handleSignOut}>退出登录</button>
+                </div>
+              ) : (
+                <div className="login-form">
+                  <label><span>邮箱</span><input type="email" value={accountEmail} placeholder="name@example.com" onChange={(event) => setAccountEmail(event.target.value)} /></label>
+                  <button type="button" className="primary-button" disabled={!accountEmail.trim() || syncStatus !== "idle"} onClick={handleSendMagicLink}>发送登录链接</button>
+                  <small>通过邮箱一次性链接登录，不需要在本应用保存密码。</small>
+                </div>
+              )}
+            </section>
+
+            <section className="account-card sync-card">
+              <div className="account-card-title"><h2>手动云同步</h2><span>不会自动执行</span></div>
+              <p className="account-muted">先只读检查本地与云端差异；确认预览后才会创建备份并写入。</p>
+              <button type="button" className="primary-button" disabled={!session || syncStatus !== "idle"} onClick={handleCheckSync}>检查同步</button>
+              {syncPreview && (
+                <div className="sync-preview">
+                  <h3>合并预览</h3>
+                  <dl>
+                    <div><dt>上传记录</dt><dd>{syncPreview.uploadEntryCount}</dd></div>
+                    <div><dt>下载记录</dt><dd>{syncPreview.downloadEntryCount}</dd></div>
+                    <div><dt>上传照片</dt><dd>{syncPreview.uploadPhotoIds.length}</dd></div>
+                    <div><dt>下载照片</dt><dd>{syncPreview.downloadPhotoIds.length}</dd></div>
+                    <div><dt>冲突副本</dt><dd>{syncPreview.conflicts.length}</dd></div>
+                  </dl>
+                  <p>确认后先创建完整本地备份，再执行非破坏合并。</p>
+                  <button type="button" className="sync-confirm-button" disabled={syncStatus !== "idle"} onClick={handleConfirmSync}>确认同步</button>
+                </div>
+              )}
+            </section>
+
+            <section className="account-card backups-card">
+              <div className="account-card-title">
+                <h2>本地备份</h2>
+                <div className="backup-actions">
+                  <button type="button" onClick={handleCreateBackup} disabled={syncStatus !== "idle"}>立即备份</button>
+                  <button type="button" onClick={() => backupFileInputRef.current?.click()}>导入文件</button>
+                  <input ref={backupFileInputRef} className="hidden-input" type="file" accept="application/json,.json" onChange={handleImportBackup} />
+                </div>
+              </div>
+              <p className="account-muted">恢复只修改本地数据；恢复后不会自动同步云端。</p>
+              <div className="backup-list">
+                {backups.length === 0 ? <p className="account-muted">还没有本地备份。</p> : backups.map((backup) => (
+                  <article key={backup.backupId}>
+                    <div>
+                      <strong>{new Date(backup.createdAt).toLocaleString("zh-CN")}</strong>
+                      <small>{backup.dishes.length} 道菜 · {backup.orders.length} 个订单 · {backup.photos.length} 张照片 · {backup.reason}</small>
+                    </div>
+                    <div>
+                      <button type="button" onClick={() => handleExportBackup(backup.backupId)}>导出</button>
+                      <button type="button" className="restore-button" disabled={syncStatus !== "idle"} onClick={() => handleRestoreBackup(backup.backupId)}>恢复</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          </div>
+          {accountMessage && <p className="account-message" role="status">{accountMessage}</p>}
         </main>
       ) : (
         <main className="placeholder-page" aria-labelledby={`${currentPage}-title`}>

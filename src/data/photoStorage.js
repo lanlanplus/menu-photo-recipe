@@ -61,6 +61,29 @@ export async function deletePhoto(photoId, indexedDB = globalThis.indexedDB) {
   await runTransaction("readwrite", (store) => requestResult(store.delete(photoId)), indexedDB);
 }
 
+export async function listPhotos(indexedDB = globalThis.indexedDB) {
+  return runTransaction("readonly", (store) => requestResult(store.getAll()), indexedDB);
+}
+
+export async function replaceAllPhotos(records, indexedDB = globalThis.indexedDB) {
+  const database = await openPhotoDatabase(indexedDB);
+  try {
+    const transaction = database.transaction(PHOTO_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(PHOTO_STORE_NAME);
+    store.clear();
+    for (const record of records || []) {
+      if (record?.photoId && typeof record?.data === "string") store.put(record);
+    }
+    await new Promise((resolve, reject) => {
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error("照片整库恢复失败"));
+      transaction.onabort = () => reject(transaction.error || new Error("照片整库恢复已取消"));
+    });
+  } finally {
+    database.close();
+  }
+}
+
 export function isEmbeddedPhoto(value) {
   return typeof value === "string" && value.startsWith("data:image/");
 }

@@ -101,6 +101,24 @@ test("新增同名记录写入原 dish，并可从存储再次读出", () => {
   assert.equal(updated.length, 1);
 });
 
+test("不生成参考菜谱也能保存分类、可见食材和备注", () => {
+  const storage = memoryStorage();
+  const dishes = addDishEntry(storage, [], {
+    dishName: "测试汤",
+    category: "炖盅",
+    entry: {
+      photo: "photo-test",
+      visibleIngredients: ["鸡肉", "姜"],
+      note: "测试备注：少盐",
+      referenceRecipe: null,
+    },
+  });
+  assert.equal(dishes[0].category, "炖盅");
+  assert.equal(dishes[0].entries[0].note, "测试备注：少盐");
+  assert.equal(dishes[0].entries[0].referenceRecipe, null);
+  assert.deepEqual(dishes[0].entries[0].visibleIngredients.map((item) => item.名称), ["鸡肉", "姜"]);
+});
+
 test("创建点单时只保留一个 active，并保存采购勾选字段", () => {
   const previous = createActiveOrder([], ["dish-a"]);
   const next = createActiveOrder(previous, ["dish-b", "dish-b"]);
